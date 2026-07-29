@@ -457,7 +457,7 @@ test('Pages workflow exposes scheduled and manual customs-rate updates',()=>{
   assert.match(WORKFLOW,/github-actions\[bot\]/);
 });
 
-test('Pages deployment checks out the updated ref and honors manual opt-out',()=>{
+test('Pages deployment handles scheduled updates and honors manual opt-out',()=>{
   assert.match(WORKFLOW,/ref:\s*\$\{\{ github\.ref_name \}\}/);
   assert.match(WORKFLOW,/deploy:[\s\S]*?default:\s*false/);
   assert.match(
@@ -469,7 +469,7 @@ test('Pages deployment checks out the updated ref and honors manual opt-out',()=
     /github\.ref_name == github\.event\.repository\.default_branch/
   );
   const deployJob=WORKFLOW.slice(WORKFLOW.indexOf('\n  deploy:'));
-  assert.doesNotMatch(deployJob,/github\.event_name == 'schedule'/);
+  assert.match(deployJob,/github\.event_name == 'schedule'/);
 });
 
 test('workflow preserves rate updates and serializes all Pages deployments',()=>{

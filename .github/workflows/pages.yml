@@ -78,6 +78,7 @@ jobs:
       (needs.update-rate.result == 'success' || needs.update-rate.result == 'skipped') &&
       (
         github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
         (
           github.event_name == 'workflow_dispatch' &&
           inputs.deploy &&
