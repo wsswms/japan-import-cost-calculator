@@ -12,15 +12,18 @@ import {
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import vm from 'node:vm';
 
 import {
+  parseHistoryText,
   parseChinaMoney,
   parseSafeHtml,
   queryWindow,
   reconcileRecords,
   selectApplicableRecord,
   updateHistoryText,
-  updateHtmlDefault
+  updateHtmlDefault,
+  updateHtmlRateData
 } from '../scripts/customs-rate-lib.mjs';
 
 const SAFE_FIXTURE = `<!doctype html>
@@ -44,6 +47,13 @@ const WORKFLOW=readFileSync(
   new URL('../.github/workflows/pages.yml',import.meta.url),
   'utf8'
 );
+const PAGE=readFileSync(new URL('../index.html',import.meta.url),'utf8');
+const HISTORY=`# 海关计征汇率历史
+# 适用月份 | 取值日期 | 币种 | 人民币/100外币
+2026-01 | 2025-12-17 | JPY | 4.5516
+2026-06 | 2026-05-20 | JPY | 4.2961
+2026-07 | 2026-06-17 | JPY | 4.2346
+`;
 
 function runCli(args,env={}){
   return new Promise((resolve,reject)=>{
@@ -65,7 +75,8 @@ function temporaryProject(){
   mkdirSync(join(root,'data'));
   writeFileSync(
     join(root,'index.html'),
-    '<input id="customsRate" value="4.1847" data-customs-rate-default="4.1847">'
+    '<input id="customsRate" value="4.1847" data-customs-rate-default="4.1847">'+
+    '<script type="application/json" id="customsRateHistory">[]</script>'
   );
   writeFileSync(
     join(root,'data/customs-rates.txt'),
@@ -217,6 +228,45 @@ test('rejects malformed existing customs rate history',()=>{
   );
 });
 
+test('parses validated customs rate history records',()=>{
+  assert.deepEqual(parseHistoryText(HISTORY),[
+    {month:'2026-01',date:'2025-12-17',rate:'4.5516'},
+    {month:'2026-06',date:'2026-05-20',rate:'4.2961'},
+    {month:'2026-07',date:'2026-06-17',rate:'4.2346'}
+  ]);
+});
+
+test('embeds complete history and keeps the newest month as the page default',()=>{
+  const html='<input id="customsRate" value="4.1847" '+
+    'data-customs-rate-default="4.1847">'+
+    '<script type="application/json" id="customsRateHistory">[]</script>';
+  const records=parseHistoryText(HISTORY);
+  const updated=updateHtmlRateData(html,records);
+
+  assert.match(updated,/value="4\.2346"/);
+  assert.match(updated,/data-customs-rate-default="4\.2346"/);
+  assert.match(
+    updated,
+    /id="customsRateHistory">\[{"month":"2026-01","date":"2025-12-17","rate":"4.5516"},/
+  );
+  assert.match(updated,/"month":"2026-07","date":"2026-06-17","rate":"4.2346"}\]<\/script>/);
+});
+
+test('backfilling an older month does not roll back the page default',()=>{
+  const withOlderMonth=updateHistoryText(HISTORY,{
+    applicableMonth:'2026-02',
+    date:'2026-01-21',
+    rate:'4.4095'
+  });
+  const html='<input id="customsRate" value="4.2346" '+
+    'data-customs-rate-default="4.2346">'+
+    '<script type="application/json" id="customsRateHistory">[]</script>';
+  const updated=updateHtmlRateData(html,parseHistoryText(withOlderMonth));
+
+  assert.match(updated,/value="4\.2346"/);
+  assert.match(updated,/"month":"2026-02","date":"2026-01-21","rate":"4.4095"/);
+});
+
 test('updates only the marked customs-rate input defaults',()=>{
   const html='<input value="4.1847" id="other">'+
     '<input id="customsRate" type="number" value="4.1847" '+
@@ -294,6 +344,10 @@ test('CLI cross-checks both official publishers before updating files',async()=>
     assert.match(
       readFileSync(join(root,'index.html'),'utf8'),
       /data-customs-rate-default="4\.2346"/
+    );
+    assert.match(
+      readFileSync(join(root,'index.html'),'utf8'),
+      /id="customsRateHistory">\[{"month":"2026-07","date":"2026-06-17","rate":"4.2346"}\]<\/script>/
     );
   assert.deepEqual(requests.map(request=>request.method),['POST','POST']);
   assert.match(requests[0].headers['user-agent'],/japan-import-cost-calculator/);
@@ -414,6 +468,8 @@ test('Pages deployment checks out the updated ref and honors manual opt-out',()=
     WORKFLOW,
     /github\.ref_name == github\.event\.repository\.default_branch/
   );
+  const deployJob=WORKFLOW.slice(WORKFLOW.indexOf('\n  deploy:'));
+  assert.doesNotMatch(deployJob,/github\.event_name == 'schedule'/);
 });
 
 test('workflow preserves rate updates and serializes all Pages deployments',()=>{
@@ -422,4 +478,79 @@ test('workflow preserves rate updates and serializes all Pages deployments',()=>
   assert.doesNotMatch(beforeJobs,/concurrency:/);
   assert.match(deployJob,/concurrency:\s*[\s\S]*?group:\s*pages/);
   assert.match(deployJob,/cancel-in-progress:\s*false/);
+});
+
+function historyQueryScript(){
+  const scripts=[...PAGE.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+    .map(match=>match[1]);
+  const script=scripts.find(source=>source.includes('customsRateHistoryMonth'));
+  assert.ok(script,'customs rate history query script should exist');
+  return script;
+}
+
+function renderHistoryQuery(payload){
+  let changeListener;
+  const nodes={
+    customsRateHistory:{textContent:payload},
+    customsRateHistoryMonth:{
+      innerHTML:'',
+      value:'',
+      disabled:false,
+      addEventListener:(name,listener)=>{
+        if(name==='change')changeListener=listener;
+      }
+    },
+    customsRateHistoryRate:{textContent:''},
+    customsRateHistoryDate:{
+      textContent:'',
+      dateTime:'',
+      removeAttribute(name){
+        if(name==='datetime')this.dateTime='';
+      }
+    },
+    customsRateHistoryStatus:{textContent:''},
+    customsRate:{value:'9.9999'}
+  };
+  vm.runInNewContext(historyQueryScript(),{
+    document:{getElementById:id=>nodes[id]??null}
+  });
+  return{
+    nodes,
+    selectMonth(month){
+      nodes.customsRateHistoryMonth.value=month;
+      changeListener();
+    }
+  };
+}
+
+test('history query renders newest-first options and the latest official record',()=>{
+  const query=renderHistoryQuery(JSON.stringify(parseHistoryText(HISTORY)));
+
+  assert.ok(
+    query.nodes.customsRateHistoryMonth.innerHTML.indexOf('2026年7月')<
+      query.nodes.customsRateHistoryMonth.innerHTML.indexOf('2026年6月')
+  );
+  assert.equal(query.nodes.customsRateHistoryMonth.value,'2026-07');
+  assert.equal(query.nodes.customsRateHistoryRate.textContent,'4.2346 人民币/100日元');
+  assert.equal(query.nodes.customsRateHistoryDate.textContent,'2026年6月17日');
+  assert.equal(query.nodes.customsRateHistoryDate.dateTime,'2026-06-17');
+});
+
+test('history query changes displayed records without changing calculator state',()=>{
+  const query=renderHistoryQuery(JSON.stringify(parseHistoryText(HISTORY)));
+  query.selectMonth('2026-01');
+
+  assert.equal(query.nodes.customsRateHistoryRate.textContent,'4.5516 人民币/100日元');
+  assert.equal(query.nodes.customsRateHistoryDate.textContent,'2025年12月17日');
+  assert.equal(query.nodes.customsRate.value,'9.9999');
+});
+
+test('history query handles empty and malformed embedded data',()=>{
+  for(const payload of ['[]','not-json']){
+    const query=renderHistoryQuery(payload);
+    assert.equal(query.nodes.customsRateHistoryMonth.disabled,true);
+    assert.match(query.nodes.customsRateHistoryStatus.textContent,/暂无可用/);
+    assert.equal(query.nodes.customsRateHistoryRate.textContent,'—');
+    assert.equal(query.nodes.customsRateHistoryDate.textContent,'—');
+  }
 });

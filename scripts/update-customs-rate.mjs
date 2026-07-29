@@ -6,12 +6,13 @@ import {request as httpsRequest} from 'node:https';
 import {resolve} from 'node:path';
 
 import {
+  parseHistoryText,
   parseChinaMoney,
   parseSafeHtml,
   queryWindow,
   reconcileRecords,
   updateHistoryText,
-  updateHtmlDefault
+  updateHtmlRateData
 } from './customs-rate-lib.mjs';
 
 const DEFAULT_CHINA_MONEY_URL=
@@ -198,7 +199,7 @@ async function main(){
     readFile(htmlPath,'utf8')
   ]);
   const nextHistory=updateHistoryText(history,record);
-  const nextHtml=updateHtmlDefault(html,official.rate);
+  const nextHtml=updateHtmlRateData(html,parseHistoryText(nextHistory));
   const changed=nextHistory!==history||nextHtml!==html;
   const files=[];
   if(nextHistory!==history)files.push({path:historyPath,content:nextHistory});

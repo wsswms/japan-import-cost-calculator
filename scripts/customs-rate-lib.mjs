@@ -1,6 +1,7 @@
 const MONTH=/^\d{4}-(0[1-9]|1[0-2])$/;
 const DATE=/^\d{4}-\d{2}-\d{2}$/;
 const RATE=/^\d+(\.\d+)?$/;
+const HISTORY_LINE=/^(\d{4}-(?:0[1-9]|1[0-2])) \| (\d{4}-\d{2}-\d{2}) \| JPY \| (\d+\.\d{4})$/;
 
 function isoDate(value){
   return value.toISOString().slice(0,10);
@@ -165,12 +166,10 @@ export function reconcileRecords(chinaMoneyRecords,safeRecords,startDate,endDate
   return chinaMoney;
 }
 
-export function updateHistoryText(text,record){
-  if(typeof text!=='string'||!MONTH.test(record?.applicableMonth)){
-    throw new Error('Invalid customs rate history update');
+function parseHistoryDocument(text){
+  if(typeof text!=='string'){
+    throw new Error('Invalid customs rate history');
   }
-  const normalized=normalize(record.date,record.rate);
-  const linePattern=/^(\d{4}-(?:0[1-9]|1[0-2])) \| (\d{4}-\d{2}-\d{2}) \| JPY \| (\d+\.\d{4})$/;
   const comments=[];
   const records=new Map();
   for(const line of text.split(/\r?\n/)){
@@ -179,24 +178,43 @@ export function updateHistoryText(text,record){
       comments.push(line);
       continue;
     }
-    const match=line.match(linePattern);
+    const match=line.match(HISTORY_LINE);
     if(!match){
       throw new Error(`Invalid customs rate history line: ${line}`);
     }
+    const normalized=normalize(match[2],match[3]);
     records.set(match[1],{
-      applicableMonth:match[1],
-      date:match[2],
-      rate:match[3]
+      month:match[1],
+      date:normalized.date,
+      rate:normalized.rate
     });
   }
+  return{
+    comments,
+    records:[...records.values()]
+      .sort((left,right)=>left.month.localeCompare(right.month))
+  };
+}
+
+export function parseHistoryText(text){
+  return parseHistoryDocument(text).records;
+}
+
+export function updateHistoryText(text,record){
+  if(!MONTH.test(record?.applicableMonth)){
+    throw new Error('Invalid customs rate history update');
+  }
+  const normalized=normalize(record.date,record.rate);
+  const{comments,records:existing}=parseHistoryDocument(text);
+  const records=new Map(existing.map(value=>[value.month,value]));
   records.set(record.applicableMonth,{
-    applicableMonth:record.applicableMonth,
+    month:record.applicableMonth,
     ...normalized
   });
   const data=[...records.values()]
-    .sort((left,right)=>left.applicableMonth.localeCompare(right.applicableMonth))
+    .sort((left,right)=>left.month.localeCompare(right.month))
     .map(value=>
-      `${value.applicableMonth} | ${value.date} | JPY | ${value.rate}`
+      `${value.month} | ${value.date} | JPY | ${value.rate}`
     );
   return[...comments,...data].join('\n')+'\n';
 }
@@ -229,4 +247,34 @@ export function updateHtmlDefault(html,rate){
       `$1data-customs-rate-default="${normalized}"`
     );
   return html.replace(target,updated);
+}
+
+export function updateHtmlRateData(html,records){
+  if(!Array.isArray(records)||!records.length){
+    throw new Error('Customs rate history must contain at least one record');
+  }
+  const normalized=[...new Map(records.map(record=>{
+    if(!MONTH.test(record?.month)){
+      throw new Error('Invalid customs rate history record');
+    }
+    const value=normalize(record.date,record.rate);
+    return[record.month,{month:record.month,...value}];
+  })).values()].sort((left,right)=>left.month.localeCompare(right.month));
+  const latest=normalized.at(-1);
+  const withDefault=updateHtmlDefault(html,latest.rate);
+  const scripts=[...withDefault.matchAll(/<script\b[^>]*>[\s\S]*?<\/script>/gi)]
+    .map(match=>match[0])
+    .filter(script=>
+      /\sid=["']customsRateHistory["']/i.test(script)&&
+      /\stype=["']application\/json["']/i.test(script)
+    );
+  if(scripts.length!==1){
+    throw new Error('Expected exactly one customs-rate history data block');
+  }
+  const target=scripts[0];
+  const updated=target.replace(
+    /^(<script\b[^>]*>)[\s\S]*?(<\/script>)$/i,
+    `$1${JSON.stringify(normalized)}$2`
+  );
+  return withDefault.replace(target,updated);
 }
