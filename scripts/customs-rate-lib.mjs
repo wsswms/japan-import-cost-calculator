@@ -78,6 +78,15 @@ export function queryWindow(applicableMonth){
   };
 }
 
+export function nextMonth(applicableMonth){
+  if(!MONTH.test(applicableMonth)){
+    throw new Error('Invalid applicable month');
+  }
+  const[year,month]=applicableMonth.split('-').map(Number);
+  const next=new Date(Date.UTC(year,month,1));
+  return`${next.getUTCFullYear()}-${String(next.getUTCMonth()+1).padStart(2,'0')}`;
+}
+
 export function parseChinaMoney(payload){
   if(payload?.head?.rep_code!=='200'||!Array.isArray(payload.records)){
     throw new Error('Invalid China Money response');
@@ -249,7 +258,7 @@ export function updateHtmlDefault(html,rate){
   return html.replace(target,updated);
 }
 
-export function updateHtmlRateData(html,records){
+export function updateHtmlRateData(html,records,{preserveDefault=false}={}){
   if(!Array.isArray(records)||!records.length){
     throw new Error('Customs rate history must contain at least one record');
   }
@@ -261,7 +270,7 @@ export function updateHtmlRateData(html,records){
     return[record.month,{month:record.month,...value}];
   })).values()].sort((left,right)=>left.month.localeCompare(right.month));
   const latest=normalized.at(-1);
-  const withDefault=updateHtmlDefault(html,latest.rate);
+  const withDefault=preserveDefault?html:updateHtmlDefault(html,latest.rate);
   const scripts=[...withDefault.matchAll(/<script\b[^>]*>[\s\S]*?<\/script>/gi)]
     .map(match=>match[0])
     .filter(script=>

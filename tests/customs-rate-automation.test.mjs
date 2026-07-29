@@ -15,6 +15,7 @@ import {join} from 'node:path';
 import vm from 'node:vm';
 
 import {
+  nextMonth,
   parseHistoryText,
   parseChinaMoney,
   parseSafeHtml,
@@ -99,6 +100,12 @@ test('calculates the query window across a year boundary',()=>{
     startDate:'2025-12-17',
     endDate:'2025-12-23'
   });
+});
+
+test('calculates the next applicable month across a year boundary',()=>{
+  assert.equal(nextMonth('2026-07'),'2026-08');
+  assert.equal(nextMonth('2026-12'),'2027-01');
+  assert.throws(()=>nextMonth('2026-13'),/Invalid applicable month/);
 });
 
 test('rejects an invalid applicable month',()=>{
@@ -265,6 +272,26 @@ test('backfilling an older month does not roll back the page default',()=>{
 
   assert.match(updated,/value="4\.2346"/);
   assert.match(updated,/"month":"2026-02","date":"2026-01-21","rate":"4.4095"/);
+});
+
+test('prefetch embeds the next month without changing the active page default',()=>{
+  const august=updateHistoryText(HISTORY,{
+    applicableMonth:'2026-08',
+    date:'2026-07-15',
+    rate:'4.1847'
+  });
+  const html='<input id="customsRate" value="4.2346" '+
+    'data-customs-rate-default="4.2346">'+
+    '<script type="application/json" id="customsRateHistory">[]</script>';
+  const updated=updateHtmlRateData(
+    html,
+    parseHistoryText(august),
+    {preserveDefault:true}
+  );
+
+  assert.match(updated,/value="4\.2346"/);
+  assert.match(updated,/data-customs-rate-default="4\.2346"/);
+  assert.match(updated,/"month":"2026-08","date":"2026-07-15","rate":"4.1847"/);
 });
 
 test('updates only the marked customs-rate input defaults',()=>{
@@ -446,15 +473,22 @@ test('CLI leaves both targets unchanged when one staged write fails',async()=>{
 
 test('Pages workflow exposes scheduled and manual customs-rate updates',()=>{
   assert.match(WORKFLOW,/cron: ['"]17 8 1 \* \*['"]/);
+  assert.match(WORKFLOW,/cron: ['"]17 8 23 \* \*['"]/);
   assert.match(WORKFLOW,/timezone:\s*Asia\/Shanghai/);
   assert.match(WORKFLOW,/update_customs_rate:/);
   assert.match(WORKFLOW,/applicable_month:/);
   assert.match(WORKFLOW,/commit_changes:/);
+  assert.match(WORKFLOW,/prefetch_only:/);
   assert.match(WORKFLOW,/deploy:/);
   assert.match(WORKFLOW,/permissions:\s*[\s\S]*?contents:\s*write/);
   assert.match(WORKFLOW,/node --test tests\/\*\.test\.mjs/);
   assert.match(WORKFLOW,/node scripts\/update-customs-rate\.mjs/);
   assert.match(WORKFLOW,/github-actions\[bot\]/);
+  assert.match(
+    WORKFLOW,
+    /github\.event\.schedule[\s\S]*17 8 23 \* \*[\s\S]*--next-month[\s\S]*--preserve-default/
+  );
+  assert.match(WORKFLOW,/PREFETCH_ONLY[\s\S]*--preserve-default/);
 });
 
 test('Pages deployment handles scheduled updates and honors manual opt-out',()=>{

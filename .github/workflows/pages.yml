@@ -15,6 +15,11 @@ on:
         description: Applicable month in YYYY-MM format; blank uses the current month
         required: false
         type: string
+      prefetch_only:
+        description: Record history without changing the calculator default
+        required: true
+        type: boolean
+        default: false
       commit_changes:
         description: Commit updated rate files to the selected branch
         required: true
@@ -27,6 +32,8 @@ on:
         default: false
   schedule:
     - cron: '17 8 1 * *'
+      timezone: Asia/Shanghai
+    - cron: '17 8 23 * *'
       timezone: Asia/Shanghai
 
 permissions: {}
@@ -50,11 +57,19 @@ jobs:
       - name: Cross-check official customs rate
         env:
           APPLICABLE_MONTH: ${{ inputs.applicable_month }}
+          PREFETCH_ONLY: ${{ inputs.prefetch_only }}
+          SCHEDULE_CRON: ${{ github.event.schedule }}
         run: |
-          if [ -n "$APPLICABLE_MONTH" ]; then
-            node scripts/update-customs-rate.mjs --month "$APPLICABLE_MONTH"
+          args=()
+          if [ "$PREFETCH_ONLY" = "true" ]; then
+            args+=(--preserve-default)
+          fi
+          if [ "$SCHEDULE_CRON" = "17 8 23 * *" ]; then
+            node scripts/update-customs-rate.mjs --next-month --preserve-default
+          elif [ -n "$APPLICABLE_MONTH" ]; then
+            node scripts/update-customs-rate.mjs --month "$APPLICABLE_MONTH" "${args[@]}"
           else
-            node scripts/update-customs-rate.mjs
+            node scripts/update-customs-rate.mjs "${args[@]}"
           fi
       - name: Commit updated rate files
         if: >-

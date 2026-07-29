@@ -6,6 +6,7 @@ import {request as httpsRequest} from 'node:https';
 import {resolve} from 'node:path';
 
 import {
+  nextMonth,
   parseHistoryText,
   parseChinaMoney,
   parseSafeHtml,
@@ -21,13 +22,24 @@ const DEFAULT_SAFE_URL=
   'https://www.safe.gov.cn/AppStructured/hlw/RMBQuery.do';
 
 function parseArguments(argv){
-  const options={root:process.cwd(),month:null};
+  const options={
+    root:process.cwd(),
+    month:null,
+    useNextMonth:false,
+    preserveDefault:false
+  };
   for(let index=0;index<argv.length;index++){
     const argument=argv[index];
     if(argument==='--month'){
       options.month=argv[++index];
     }else if(argument==='--root'){
       options.root=argv[++index];
+    }else if(argument==='--next-month'){
+      options.useNextMonth=true;
+      continue;
+    }else if(argument==='--preserve-default'){
+      options.preserveDefault=true;
+      continue;
     }else{
       throw new Error(`Unknown argument: ${argument}`);
     }
@@ -35,7 +47,15 @@ function parseArguments(argv){
       throw new Error(`Missing value for ${argument}`);
     }
   }
-  return{month:options.month??currentShanghaiMonth(),root:resolve(options.root)};
+  if(options.month&&options.useNextMonth){
+    throw new Error('--month and --next-month cannot be used together');
+  }
+  const currentMonth=currentShanghaiMonth();
+  return{
+    month:options.useNextMonth?nextMonth(currentMonth):options.month??currentMonth,
+    preserveDefault:options.preserveDefault,
+    root:resolve(options.root)
+  };
 }
 
 function currentShanghaiMonth(){
@@ -163,7 +183,7 @@ async function replaceFilesSafely(files){
 }
 
 async function main(){
-  const{month,root}=parseArguments(process.argv.slice(2));
+  const{month,preserveDefault,root}=parseArguments(process.argv.slice(2));
   const window=queryWindow(month);
   const common={
     startDate:window.startDate,
@@ -199,14 +219,19 @@ async function main(){
     readFile(htmlPath,'utf8')
   ]);
   const nextHistory=updateHistoryText(history,record);
-  const nextHtml=updateHtmlRateData(html,parseHistoryText(nextHistory));
+  const nextHtml=updateHtmlRateData(
+    html,
+    parseHistoryText(nextHistory),
+    {preserveDefault}
+  );
   const changed=nextHistory!==history||nextHtml!==html;
   const files=[];
   if(nextHistory!==history)files.push({path:historyPath,content:nextHistory});
   if(nextHtml!==html)files.push({path:htmlPath,content:nextHtml});
   await replaceFilesSafely(files);
   console.log(
-    `month=${month} sourceDate=${official.date} rate=${official.rate} changed=${changed}`
+    `month=${month} sourceDate=${official.date} rate=${official.rate} `+
+    `changed=${changed} preserveDefault=${preserveDefault}`
   );
 }
 
