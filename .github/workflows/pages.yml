@@ -1,29 +1,106 @@
-name: Deploy to GitHub Pages
+name: Update Customs Rate and Deploy Pages
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      update_customs_rate:
+        description: Cross-check and update the customs rate
+        required: true
+        type: boolean
+        default: false
+      applicable_month:
+        description: Applicable month in YYYY-MM format; blank uses the current month
+        required: false
+        type: string
+      commit_changes:
+        description: Commit updated rate files to the selected branch
+        required: true
+        type: boolean
+        default: false
+      deploy:
+        description: Deploy main to GitHub Pages
+        required: true
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 8 1 * *'
+      timezone: Asia/Shanghai
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
+permissions: {}
 
 jobs:
-  deploy:
+  update-rate:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.update_customs_rate)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Run tests
+        run: node --test tests/*.test.mjs
+      - name: Cross-check official customs rate
+        env:
+          APPLICABLE_MONTH: ${{ inputs.applicable_month }}
+        run: |
+          if [ -n "$APPLICABLE_MONTH" ]; then
+            node scripts/update-customs-rate.mjs --month "$APPLICABLE_MONTH"
+          else
+            node scripts/update-customs-rate.mjs
+          fi
+      - name: Commit updated rate files
+        if: >-
+          github.event_name == 'schedule' ||
+          inputs.commit_changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/customs-rates.txt index.html
+          if git diff --cached --quiet; then
+            echo "Official rate is already recorded; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: update monthly customs rate"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+  deploy:
+    needs: update-rate
+    if: >-
+      always() &&
+      (needs.update-rate.result == 'success' || needs.update-rate.result == 'skipped') &&
+      (
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.deploy &&
+          github.ref_name == github.event.repository.default_branch
+        )
+      )
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout
+      - name: Checkout selected branch
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
